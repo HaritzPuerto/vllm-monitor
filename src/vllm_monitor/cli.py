@@ -46,6 +46,17 @@ def _assumptions(args) -> Assumptions:
     return Assumptions(bandwidth_eff=args.bandwidth_eff, flops_eff=args.flops_eff)
 
 
+def _exit_on_sigterm() -> None:
+    """Turn SIGTERM (job end, condor_rm, scancel, kill) into KeyboardInterrupt so cleanup runs.
+
+    Without this a gzip recording is left without its trailer and cannot be read back.
+    """
+    def handler(signum, frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, handler)
+
+
 def _connect(args, console: Console):
     client = VLLMClient(args.url, api_key=args.api_key)
     snap = None
@@ -72,6 +83,7 @@ def cmd_watch(args) -> int:
     console = Console()
     client, setup = _connect(args, console)
     rec = Recorder(args.record, setup_header(setup, args.model_config)) if args.record else None
+    _exit_on_sigterm()
     try:
         watch(client, setup, interval=args.interval, window=args.window, record=rec, console=console)
     except KeyboardInterrupt:
@@ -111,6 +123,7 @@ def cmd_serve(args) -> int:
     rec = Recorder(args.record, setup_header(setup, args.model_config)) if args.record else None
     service = MonitorService(client, setup, interval=args.interval, window=args.window,
                              history=args.history, recorder=rec)
+    _exit_on_sigterm()
     try:
         _serve(service, args.host, args.port, console)
     finally:
@@ -124,7 +137,7 @@ def cmd_record(args) -> int:
     client, setup = _connect(args, console)
     rec = Recorder(args.output, setup_header(setup, args.model_config))
     console.print(f"recording {client.base} every {args.interval:g}s to {args.output}")
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))  # condor_rm / scancel
+    _exit_on_sigterm()
     start, last_log, prev = time.time(), 0.0, None
     try:
         while args.duration is None or time.time() - start < args.duration:

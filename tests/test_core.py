@@ -157,3 +157,49 @@ def test_web_api_serves_page_and_state():
     finally:
         web.shutdown()
         fake_server.shutdown()
+
+
+@pytest.mark.parametrize("cmd", ["serve", "record"])
+def test_sigterm_leaves_readable_gzip(tmp_path, cmd):
+    """Jobs stop the monitor with SIGTERM; the .gz recording must still be complete."""
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    (tmp_path / "model").mkdir()
+    (tmp_path / "model" / "config.json").write_text(json.dumps(DEMO_CONFIG))
+    server = serve(FakeVLLM("healthy"))
+    out = tmp_path / "run.jsonl.gz"
+    args = [sys.executable, "-m", "vllm_monitor.cli", cmd, f"http://127.0.0.1:{server.server_address[1]}",
+            "--interval", "0.2", "--gpu", "H100-SXM", "--model-config", str(tmp_path / "model")]
+    args += ["--record", str(out), "--port", "0"] if cmd == "serve" else ["-o", str(out)]
+    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        deadline = time.time() + 20
+        while time.time() < deadline and (not out.exists() or out.stat().st_size < 200):
+            time.sleep(0.2)
+        time.sleep(1)
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=10) == 0, proc.stderr.read().decode()
+    finally:
+        proc.kill()
+        server.shutdown()
+    import gzip
+
+    gzip.decompress(out.read_bytes())  # raises EOFError on a truncated stream
+    header, snaps = read_recording(str(out))
+    assert header["gpu"] == "H100-SXM" and len(snaps) >= 3
+
+
+def test_read_truncated_gzip(tmp_path):
+    """A SIGKILLed job can't close the file; report must still read what was flushed."""
+    import gzip
+
+    lines = [json.dumps({"type": "header", "gpu": "H100-SXM"})] + [
+        json.dumps({"t": float(i), "v": {"vllm:generation_tokens_total": 100.0 * i}}) for i in range(50)]
+    data = gzip.compress(("\n".join(lines) + "\n").encode())
+    out = tmp_path / "cut.jsonl.gz"
+    out.write_bytes(data[: len(data) - 12])  # drop the trailer and some data
+    header, snaps = read_recording(str(out))
+    assert header["gpu"] == "H100-SXM" and len(snaps) >= 40

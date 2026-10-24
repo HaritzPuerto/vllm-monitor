@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import gzip
 import json
+import threading
+import zlib
 from pathlib import Path
 from typing import IO, List, Tuple
 
@@ -24,13 +26,22 @@ class Recorder:
         self._f = _open(self.path, "a")
         self._f.write(json.dumps({"type": "header", "version": __version__, **header}) + "\n")
         self._f.flush()
+        # `serve` writes from its scraper thread while the main thread may be closing.
+        self._lock = threading.Lock()
+        self._closed = False
 
     def write(self, snap: Snapshot) -> None:
-        self._f.write(json.dumps(snap.to_json(), separators=(",", ":")) + "\n")
-        self._f.flush()
+        with self._lock:
+            if self._closed:
+                return
+            self._f.write(json.dumps(snap.to_json(), separators=(",", ":")) + "\n")
+            self._f.flush()
 
     def close(self) -> None:
-        self._f.close()
+        with self._lock:
+            if not self._closed:
+                self._closed = True
+                self._f.close()
 
 
 def read_recording(path: str) -> Tuple[dict, List[Snapshot]]:
@@ -38,16 +49,19 @@ def read_recording(path: str) -> Tuple[dict, List[Snapshot]]:
     header: dict = {}
     snaps: List[Snapshot] = []
     with _open(Path(path), "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                d = json.loads(line)
-            except json.JSONDecodeError:  # truncated last line of a killed job
-                continue
-            if d.get("type") == "header":
-                header = d
-            else:
-                snaps.append(Snapshot.from_json(d, {"vllm:cache_config_info": header.get("cache_info") or {}}))
+        try:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:  # truncated last line of a killed job
+                    continue
+                if d.get("type") == "header":
+                    header = d
+                else:
+                    snaps.append(Snapshot.from_json(d, {"vllm:cache_config_info": header.get("cache_info") or {}}))
+        except (EOFError, zlib.error, gzip.BadGzipFile):
+            pass  # gzip stream cut off (SIGKILL / OOM): keep everything read so far
     return header, snaps
