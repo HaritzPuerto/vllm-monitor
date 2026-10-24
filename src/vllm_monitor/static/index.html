@@ -1,0 +1,686 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vLLM monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  color-scheme: light;
+  --plane: #eff0ec;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.10);
+  --s1: #2a78d6;
+  --s1-wash: rgba(42, 120, 214, 0.12);
+  --s2: #eb6834;
+  --expected: #52514e;
+  --good: #0ca30c;
+  --good-text: #006300;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+  --track: #e8e7e1;
+  --shadow: 0 1px 0 rgba(11, 11, 11, 0.04);
+  --font: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --plane: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10);
+    --s1: #3987e5; --s1-wash: rgba(57, 135, 229, 0.16); --s2: #d95926; --expected: #c3c2b7;
+    --good-text: #0ca30c; --track: #262624; --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10);
+  --s1: #3987e5; --s1-wash: rgba(57, 135, 229, 0.16); --s2: #d95926; --expected: #c3c2b7;
+  --good-text: #0ca30c; --track: #262624; --shadow: none;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--plane);
+  color: var(--ink);
+  font: 15px/1.5 var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; border-radius: 4px; }
+.wrap { max-width: 1280px; margin: 0 auto; padding: 0 24px 48px; }
+
+/* ---------- top bar ---------- */
+.top {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  padding: 20px 0 8px;
+}
+.ident { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.ident svg { flex: none; }
+.ident h1 { font-size: 17px; font-weight: 600; margin: 0; line-height: 1.25; overflow-wrap: anywhere; }
+.ident p { margin: 0; color: var(--ink-2); font-size: 13px; }
+.controls { display: flex; align-items: center; gap: 10px; }
+.live {
+  display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--ink-2);
+  padding: 4px 10px 4px 9px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface);
+}
+.live i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.live.on i { background: var(--good); box-shadow: 0 0 0 0 rgba(12, 163, 12, .5); animation: pulse 2s infinite; }
+.live.off i { background: var(--critical); }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(12,163,12,.45); } 70% { box-shadow: 0 0 0 7px rgba(12,163,12,0); } 100% { box-shadow: 0 0 0 0 rgba(12,163,12,0); } }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 2px; }
+.seg button { border: 0; background: none; padding: 3px 10px; border-radius: 6px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.icon-btn {
+  border: 1px solid var(--border); background: var(--surface); width: 32px; height: 30px; border-radius: 8px;
+  cursor: pointer; display: grid; place-items: center; color: var(--ink-2);
+}
+
+/* ---------- hero ---------- */
+.hero {
+  display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 16px; margin-top: 12px;
+}
+.panel {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow);
+}
+.hero-main {
+  padding: 22px 28px; display: grid; grid-template-columns: minmax(250px, 360px) minmax(0, 1fr);
+  gap: 32px; align-items: center;
+}
+.gauge svg { display: block; width: 100%; height: auto; overflow: visible; }
+.gauge .tl { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.gauge .num { font-size: 42px; font-weight: 600; letter-spacing: -0.03em; fill: var(--ink); }
+.gauge .unit { font-size: 13px; fill: var(--ink-2); }
+/* overshooting ease: the needle swings past and settles, like a real gauge */
+.gauge .swing { transition: transform 1s cubic-bezier(.34, 1.45, .5, 1); }
+.gauge .fill { transition: stroke-dasharray 1s cubic-bezier(.2, .8, .2, 1); }
+.hero-text { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; min-width: 0; }
+.marks { margin: 2px 0 0; display: grid; grid-template-columns: 14px auto auto; gap: 8px 10px; align-items: center; justify-content: start; font-size: 14px; }
+.marks div { display: contents; }
+.marks dt { color: var(--ink-2); }
+.marks dd { margin: 0 0 0 6px; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+.status {
+  display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px;
+  padding: 3px 12px 3px 8px; border-radius: 999px; background: var(--track);
+}
+.status svg { width: 16px; height: 16px; }
+.sentence { font-size: 17px; line-height: 1.5; margin: 0; max-width: 58ch; color: var(--ink); }
+.sentence b { font-weight: 600; }
+
+
+.advice { padding: 22px 22px 14px; display: flex; flex-direction: column; min-height: 0; }
+.advice h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+.advice ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; overflow: auto; max-height: 420px; }
+.advice li { display: grid; grid-template-columns: 20px 1fr; gap: 10px; }
+.advice li svg { width: 18px; height: 18px; margin-top: 2px; }
+.advice .t { font-weight: 600; line-height: 1.35; }
+.advice .d { color: var(--ink-2); font-size: 14px; margin-top: 2px; }
+.advice ul { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.advice ul li { display: block; font-size: 13.5px; padding-left: 14px; position: relative; color: var(--ink); }
+.advice ul li::before { content: ""; position: absolute; left: 2px; top: .62em; width: 5px; height: 5px; border-radius: 50%; background: var(--axis); }
+.advice code, .notes code { font-size: 12.5px; background: var(--track); padding: 0 4px; border-radius: 4px; }
+
+/* ---------- charts ---------- */
+.charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
+.card { margin: 0; padding: 18px 20px 12px; }
+.card.wide { grid-column: 1 / -1; }
+.card header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.card h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.card .sub { margin: 2px 0 0; color: var(--ink-2); font-size: 13px; }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.key { width: 16px; height: 0; border-top: 2px solid; display: inline-block; }
+.key.dash { border-top-style: dashed; }
+.key.box { height: 10px; border: 0; border-radius: 2px; }
+.chart { margin-top: 8px; position: relative; }
+.chart svg { display: block; width: 100%; }
+.chart .tick { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.stale .chart, .stale .gauge { opacity: .45; transition: opacity .3s; }
+
+/* ---------- stat strip ---------- */
+.stats {
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 16px 0 0; overflow: hidden;
+}
+.stats div { padding: 14px 18px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); margin: 0 -1px -1px 0; }
+.stats dt { font-size: 13px; color: var(--ink-2); }
+.stats dd { margin: 2px 0 0; font-size: 21px; font-weight: 600; letter-spacing: -0.01em; }
+.stats dd small { display: block; font-size: 13px; color: var(--ink-2); font-weight: 400; letter-spacing: 0; }
+
+details.table { margin-top: 16px; padding: 14px 20px; }
+details.table summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+.table-scroll { overflow-x: auto; margin-top: 10px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--ink-2); font-weight: 500; }
+
+.notes { margin-top: 14px; color: var(--ink-2); font-size: 13px; }
+.tip {
+  position: fixed; pointer-events: none; z-index: 10; background: var(--surface); color: var(--ink);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12.5px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.14); opacity: 0; transition: opacity .1s; min-width: 150px;
+}
+.tip .tt { color: var(--ink-2); margin-bottom: 4px; }
+.tip .row { display: flex; justify-content: space-between; gap: 14px; align-items: center; }
+.tip .row span { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
+.tip .row b { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+@media (max-width: 1180px) {
+  .hero { grid-template-columns: minmax(0, 1fr); }
+  .advice ol { max-height: none; }
+}
+@media (max-width: 900px) {
+  .hero, .charts { grid-template-columns: minmax(0, 1fr); }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .wrap { padding: 0 16px 40px; }
+  .hero-main { padding: 20px; grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 18px; }
+  .gauge { width: min(330px, 100%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+  <div class="top">
+    <div class="ident">
+      <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true">
+        <rect x="1" y="1" width="32" height="32" rx="9" fill="var(--ink)"/>
+        <path d="M8 22 L13 15 L17 19 L22 10 L26 13" fill="none" stroke="var(--surface)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div>
+        <h1 id="model">Connecting…</h1>
+        <p id="hw">vLLM monitor</p>
+      </div>
+    </div>
+    <div class="controls">
+      <span class="live" id="live"><i></i><span>Connecting</span></span>
+      <div class="seg" role="group" aria-label="Chart time range">
+        <button data-range="300" aria-pressed="false">5 min</button>
+        <button data-range="900" aria-pressed="true">15 min</button>
+        <button data-range="3600" aria-pressed="false">1 h</button>
+      </div>
+      <button class="icon-btn" id="theme" aria-label="Switch light or dark theme" title="Switch theme">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.5a6.5 6.5 0 0 1 0 13z" fill="currentColor"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <section class="hero">
+    <div class="panel hero-main">
+      <div class="gauge" id="gauge"></div>
+      <div class="hero-text">
+        <span class="status" id="status">Waiting for data</span>
+        <p class="sentence" id="sentence">Collecting the first samples from the server.</p>
+        <dl class="marks" id="marks"></dl>
+      </div>
+    </div>
+    <aside class="panel advice" aria-labelledby="advice-h">
+      <h2 id="advice-h">What to change</h2>
+      <ol id="advice"></ol>
+    </aside>
+  </section>
+
+  <section class="charts">
+    <figure class="panel card wide">
+      <header>
+        <div><h3>Output throughput</h3><p class="sub">Tokens per second, compared with the estimate for the current load</p></div>
+        <div class="legend" id="lg-out"></div>
+      </header>
+      <div class="chart" id="c-out" tabindex="0" aria-label="Output throughput chart"></div>
+    </figure>
+    <figure class="panel card">
+      <header>
+        <div><h3>Requests in the server</h3><p class="sub">Being generated vs. queued</p></div>
+        <div class="legend" id="lg-req"></div>
+      </header>
+      <div class="chart" id="c-req" tabindex="0" aria-label="Requests chart"></div>
+    </figure>
+    <figure class="panel card">
+      <header>
+        <div><h3>KV cache</h3><p class="sub">Share of GPU memory for attention state in use</p></div>
+        <div class="legend" id="lg-kv"></div>
+      </header>
+      <div class="chart" id="c-kv" tabindex="0" aria-label="KV cache usage chart"></div>
+    </figure>
+    <figure class="panel card wide">
+      <header>
+        <div><h3>Prompt throughput</h3><p class="sub">Prompt tokens processed per second (prefill)</p></div>
+        <div class="legend" id="lg-prompt"></div>
+      </header>
+      <div class="chart" id="c-prompt" tabindex="0" aria-label="Prompt throughput chart"></div>
+    </figure>
+  </section>
+
+  <dl class="panel stats" id="stats"></dl>
+
+  <details class="panel table">
+    <summary>Data table</summary>
+    <div class="table-scroll"><table id="table"></table></div>
+  </details>
+  <p class="notes" id="notes"></p>
+</div>
+<div class="tip" id="tip" role="tooltip"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const NS = "http://www.w3.org/2000/svg";
+const state = { points: [], last: 0, range: 900, data: null, hoverT: null, interval: 2 };
+const charts = [];
+
+/* ---------- formatting ---------- */
+const nf0 = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+const nf1 = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+function num(v) { return v == null || !isFinite(v) ? "–" : (Math.abs(v) >= 100 ? nf0 : nf1).format(v); }
+function compact(v) {
+  if (v == null) return "–";
+  if (v >= 1e6) return nf1.format(v / 1e6) + "M";
+  if (v >= 1e4) return nf0.format(v / 1e3) + "k";
+  if (v >= 1e3) return nf1.format(v / 1e3) + "k";
+  return nf0.format(v);
+}
+function secs(v) { return v == null ? "–" : v < 1 ? nf0.format(v * 1000) + " ms" : nf1.format(v) + " s"; }
+function pct(v) { return v == null ? "–" : nf0.format(v * 100) + "%"; }
+function clock(t) { return new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: t % 60 ? "2-digit" : undefined }); }
+function clockS(t) { return new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function codeify(s) { return esc(s).replace(/(--[a-z0-9-]+)/g, "<code>$1</code>"); }
+function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function el(tag, attrs, parent) {
+  const n = document.createElementNS(NS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+
+/* ---------- status icons (shape + label, never color alone) ---------- */
+const ICONS = {
+  good: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7.5" fill="var(--good)"/><path d="M4.6 8.3l2.2 2.2 4.6-4.8" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  warning: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1L15.5 14.5H.5z" fill="var(--warning)" stroke-linejoin="round"/><path d="M8 6v4" stroke="#0b0b0b" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="12.3" r="1" fill="#0b0b0b"/></svg>',
+  serious: '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="1" width="14" height="14" rx="3.5" fill="var(--serious)"/><path d="M8 4.5v4.5" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.6" r="1" fill="#fff"/></svg>',
+  critical: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7.5" fill="var(--critical)"/><path d="M5.3 5.3l5.4 5.4M10.7 5.3l-5.4 5.4" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  info: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="none" stroke="var(--muted)" stroke-width="1.5"/><path d="M8 7v4.2" stroke="var(--ink-2)" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="4.8" r="1" fill="var(--ink-2)"/></svg>',
+  idle: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="none" stroke="var(--muted)" stroke-width="1.5"/><path d="M6 5.5v5M10 5.5v5" stroke="var(--muted)" stroke-width="1.6" stroke-linecap="round"/></svg>',
+};
+const ADVICE_ICON = { ok: "good", info: "info", warn: "warning", crit: "critical" };
+
+/* ---------- hero ---------- */
+function verdictOf(a) {
+  if (!a) return { key: "idle", label: "Waiting for data" };
+  if (a.verdict === "idle") return { key: "idle", label: "Idle" };
+  const headroom = a.best && a.stats.gen_tps > 0 ? a.best.output_tps / a.stats.gen_tps : null;
+  if (a.verdict === "slow") return { key: "critical", label: "Slower than expected", headroom };
+  if (headroom && headroom >= 3) return { key: "serious", label: "GPU underused", headroom };
+  if (a.verdict === "fair") return { key: "warning", label: "Somewhat slow", headroom };
+  if (a.verdict === "good") return { key: "good", label: "Running as expected", headroom };
+  return { key: "info", label: "No estimate", headroom };
+}
+
+function renderHero(d) {
+  const a = d.analysis;
+  const v = verdictOf(a);
+  $("status").innerHTML = (ICONS[v.key] || "") + "<span>" + v.label + "</span>";
+  let s;
+  if (!a) s = d.error ? "Can't reach the server: " + esc(d.error) : "Collecting the first samples from the server.";
+  else if (a.verdict === "idle") s = "No requests are running. Throughput will appear once your client sends work.";
+  else if (!a.expected) s = "Producing <b>" + num(a.stats.gen_tps) + " tokens/s</b> with about " + num(a.stats.running_busy_avg) +
+    " requests in flight. Start with <code>--gpu</code> and <code>--tp</code> to compare against an estimate.";
+  else {
+    s = "Running at <b>" + pct(a.efficiency) + "</b> of the speed expected for " + nf0.format(a.expected.concurrency) +
+      " concurrent requests on this hardware.";
+    if (v.headroom >= 1.5 && a.knee) s += " The GPU could do about <b>" + nf1.format(v.headroom) + "× more</b> with " +
+      nf0.format(a.knee.concurrency) + " or more requests in flight.";
+    else if (v.headroom != null) s += " That's close to the most this GPU can do for this workload.";
+  }
+  $("sentence").innerHTML = s;
+  renderGauge(a);
+}
+
+/* ---------- speedometer ---------- */
+const GA = { cx: 160, cy: 148, R: 126, a0: -110, a1: 110 };  // 220° dial, 0° = straight up
+const gauge = { max: 0, n: {} };
+function polar(r, deg) {
+  const a = (deg * Math.PI) / 180;
+  return [GA.cx + r * Math.sin(a), GA.cy - r * Math.cos(a)];
+}
+function arcD(r, d0, d1) {
+  const [x0, y0] = polar(r, d0), [x1, y1] = polar(r, d1);
+  return `M${x0.toFixed(2)},${y0.toFixed(2)}A${r},${r} 0 ${d1 - d0 > 180 ? 1 : 0} 1 ${x1.toFixed(2)},${y1.toFixed(2)}`;
+}
+const angleOf = (v) => GA.a0 + (GA.a1 - GA.a0) * Math.max(0, Math.min(1, (v || 0) / gauge.max));
+const MARKER = (color) => `<svg class="mk" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 13L1.5 3h11z" fill="${color}"/></svg>`;
+
+function buildGauge(max) {
+  const { cx, cy, R, a0, a1 } = GA;
+  gauge.max = max;
+  const box = $("gauge");
+  box.innerHTML = "";
+  const svg = el("svg", { viewBox: "0 0 320 262", role: "img" }, box);
+  const n = (gauge.n = { svg });
+  el("path", { d: arcD(R, a0, a1), fill: "none", stroke: "var(--track)", "stroke-width": 14, "stroke-linecap": "round" }, svg);
+  // shaded "possible" zone and the live value arc, both drawn as dash lengths along one full arc
+  n.room = el("path", { class: "fill", d: arcD(R, a0, a1), fill: "none", stroke: "var(--s1-wash)", "stroke-width": 14,
+    "stroke-linecap": "round", pathLength: 1000, "stroke-dasharray": "0 1000" }, svg);
+  n.value = el("path", { class: "fill", d: arcD(R, a0, a1), fill: "none", stroke: "var(--s1)", "stroke-width": 14,
+    "stroke-linecap": "round", pathLength: 1000, "stroke-dasharray": "0 1000" }, svg);
+  // ticks: 5ish labelled majors, 4 minors between
+  const step = niceStep(max / 5);
+  for (let v = 0; v <= max + 1e-9; v += step / 5) {
+    const major = Math.abs(v / step - Math.round(v / step)) < 1e-6, a = angleOf(v);
+    const [x0, y0] = polar(R - 12, a), [x1, y1] = polar(R - (major ? 22 : 17), a);
+    el("line", { x1: x0, y1: y0, x2: x1, y2: y1, stroke: major ? "var(--ink-2)" : "var(--axis)", "stroke-width": major ? 1.6 : 1, "stroke-linecap": "round" }, svg);
+    if (major) {
+      const [tx, ty] = polar(R - 36, a);
+      const t = el("text", { x: tx, y: ty + 4, "text-anchor": "middle", class: "tl" }, svg);
+      t.textContent = compact(v);
+    }
+  }
+  const marker = (color) => {
+    const g = el("g", { class: "swing", style: `transform-origin:${cx}px ${cy}px` }, svg);
+    el("path", { d: `M${cx},${cy - R - 9}L${cx - 6.5},${cy - R - 21}L${cx + 6.5},${cy - R - 21}Z`, fill: color, "stroke-linejoin": "round" }, g);
+    return g;
+  };
+  n.expected = marker("var(--expected)");
+  n.best = marker("var(--ink)");
+  n.needle = el("g", { class: "swing", style: `transform-origin:${cx}px ${cy}px; transform: rotate(${a0}deg)` }, svg);
+  el("path", { d: `M${cx - 4.5},${cy}L${cx - 1},${cy - R + 26}L${cx + 1},${cy - R + 26}L${cx + 4.5},${cy}Z`, fill: "var(--ink)" }, n.needle);
+  el("circle", { cx, cy, r: 8, fill: "var(--ink)", stroke: "var(--surface)", "stroke-width": 3 }, svg);
+  n.num = el("text", { x: cx, y: cy + 82, "text-anchor": "middle", class: "num" }, svg);
+  n.unit = el("text", { x: cx, y: cy + 104, "text-anchor": "middle", class: "unit" }, svg);
+  n.unit.textContent = "output tokens / s";
+}
+
+function renderGauge(a) {
+  const actual = a ? a.stats.gen_tps : 0;
+  const exp = a && a.expected ? a.expected_now : null, best = a && a.best ? a.best.output_tps : null;
+  const top = Math.max(actual, exp || 0, best || 0, 100) * 1.06;
+  const step = niceStep(top / 5), max = Math.ceil(top / step) * step;
+  // rebuild the dial only when the scale really changes, so the needle animates instead of jumping
+  if (!gauge.max || top > gauge.max || max < gauge.max * 0.6) buildGauge(max);
+  const n = gauge.n;
+  n.num.textContent = a ? num(actual) : "–";
+  n.needle.style.transform = `rotate(${angleOf(actual)}deg)`;
+  const frac = (v) => Math.max(0, Math.min(1, v / gauge.max)) * 1000;
+  n.value.setAttribute("stroke-dasharray", `${frac(actual).toFixed(1)} 1000`);
+  n.room.setAttribute("stroke-dasharray", `${frac(best || 0).toFixed(1)} 1000`);
+  for (const [g, v] of [[n.expected, exp], [n.best, best]]) {
+    g.style.display = v == null ? "none" : "";
+    if (v != null) g.style.transform = `rotate(${angleOf(v)}deg)`;
+  }
+  n.svg.setAttribute("aria-label", `Speedometer: ${num(actual)} output tokens per second` +
+    (exp != null ? `, expected ${num(exp)}` : "") + (best != null ? `, possible ${num(best)}` : ""));
+  const rows = [[`<svg class="mk" viewBox="0 0 14 14" aria-hidden="true"><rect x="1" y="4" width="12" height="6" rx="2" fill="var(--s1)"/></svg>`, "You now", a ? num(actual) : "–"]];
+  if (exp != null) rows.push([MARKER("var(--expected)"), "Expected at this load", num(exp)]);
+  if (best != null) rows.push([MARKER("var(--ink)"), `Possible at ${nf0.format(a.best.concurrency)} requests`, num(best)]);
+  $("marks").innerHTML = rows.map(([i, k, v]) => `<div>${i}<dt>${k}</dt><dd>${v}</dd></div>`).join("");
+}
+
+/* ---------- advice ---------- */
+function renderAdvice(a) {
+  const ol = $("advice");
+  if (!a) { ol.innerHTML = '<li><span></span><div class="d">Advice appears after a few samples.</div></li>'; return; }
+  ol.innerHTML = a.advice.map((x) => `<li>${ICONS[ADVICE_ICON[x.level]]}<div><div class="t">${esc(x.title)}</div>` +
+    (x.detail ? `<div class="d">${esc(x.detail)}</div>` : "") +
+    (x.actions.length ? "<ul>" + x.actions.map((y) => `<li>${codeify(y)}</li>`).join("") + "</ul>" : "") +
+    "</div></li>").join("");
+}
+
+/* ---------- stat strip ---------- */
+function renderStats(d) {
+  const a = d.analysis, s = a ? a.stats : {};
+  const h = (x, k) => (x ? x[k] : null);
+  const items = [
+    ["Time to first token", secs(h(s.ttft, "p50")), "p95 " + secs(h(s.ttft, "p95"))],
+    ["Between tokens", secs(h(s.itl, "p50")), "p95 " + secs(h(s.itl, "p95"))],
+    ["Request duration", secs(h(s.e2e, "p50")), "p95 " + secs(h(s.e2e, "p95"))],
+    ["Queue wait", secs(h(s.queue, "p50")), "p95 " + secs(h(s.queue, "p95"))],
+    ["Prompt length", num(s.avg_prompt_len), "tokens avg"],
+    ["Output length", num(s.avg_gen_len), "tokens avg"],
+    ["Requests done", a ? nf1.format(s.requests_per_s) : "–", "per second"],
+    ["GPU busy", pct(s.busy_frac), "of the window"],
+    ["Prefix-cache hits", pct(s.prefix_hit_rate), ""],
+    ["Preemptions", a ? nf0.format(s.preemptions) : "–", "last " + nf0.format(d.window) + " s"],
+  ];
+  $("stats").innerHTML = items.map(([k, v, sub]) => `<div><dt>${k}</dt><dd>${v}<small>${sub || "&nbsp;"}</small></dd></div>`).join("");
+}
+
+/* ---------- time-series chart ---------- */
+function niceStep(v) {
+  if (!(v > 0)) return 0.25;
+  const p = Math.pow(10, Math.floor(Math.log10(v))), n = v / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 3 ? 3 : n <= 4 ? 4 : n <= 5 ? 5 : 10) * p;
+}
+// Axis top as 4 nice steps; counts (integer series) never get fractional ticks.
+function niceMax(v, integer) {
+  let step = niceStep(v / 4);
+  if (integer) step = Math.max(1, Math.ceil(step));
+  return step * 4;
+}
+
+function makeChart(id, legendId, opts) {
+  const box = $(id);
+  const c = { box, legend: $(legendId), opts, svg: null, geo: null };
+  c.render = function (pts, t0, t1) {
+    const W = box.clientWidth, H = opts.height || 190, m = { l: 46, r: 14, t: 10, b: 24 };
+    const iw = W - m.l - m.r, ih = H - m.t - m.b;
+    let ymax = opts.ymax || 0;
+    if (!opts.ymax) for (const p of pts) for (const s of opts.series) { const v = p[s.key]; if (v != null && v > ymax) ymax = v; }
+    ymax = opts.ymax || niceMax(ymax * 1.05, opts.integer);
+    const X = (t) => m.l + ((t - t0) / (t1 - t0)) * iw;
+    const Y = (v) => m.t + ih - (v / ymax) * ih;
+    box.innerHTML = "";
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": box.getAttribute("aria-label") }, box);
+    // grid + y ticks
+    for (let i = 0; i <= 4; i++) {
+      const v = (ymax * i) / 4, yy = Y(v);
+      el("line", { x1: m.l, x2: W - m.r, y1: yy, y2: yy, stroke: i === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": 1 }, svg);
+      const t = el("text", { x: m.l - 8, y: yy + 4, "text-anchor": "end", class: "tick" }, svg);
+      t.textContent = opts.yfmt ? opts.yfmt(v) : compact(v);
+    }
+    // x ticks
+    const span = t1 - t0, step = [15, 30, 60, 120, 180, 300, 600, 900].find((x) => span / x <= 6) || 1200;
+    for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+      const tx = el("text", { x: X(t), y: H - 6, "text-anchor": "middle", class: "tick" }, svg);
+      tx.textContent = clock(t);
+    }
+    // series (break lines across gaps)
+    const gap = Math.max(state.interval * 3.5, 8);
+    for (const s of opts.series) {
+      let d = "", area = "", prev = null, start = null;
+      for (const p of pts) {
+        const v = p[s.key];
+        if (v == null) { prev = null; continue; }
+        const px = X(p.t).toFixed(1), py = Y(Math.min(v, ymax)).toFixed(1);
+        if (!prev || p.t - prev.t > gap) {
+          if (s.area && start) area += `L${X(prev.t).toFixed(1)},${Y(0)}L${start},${Y(0)}Z`;
+          d += `M${px},${py}`; if (s.area) { area += `M${px},${Y(0)}L${px},${py}`; start = px; }
+        } else { d += `L${px},${py}`; if (s.area) area += `L${px},${py}`; }
+        prev = p;
+      }
+      if (s.area && prev && start) area += `L${X(prev.t).toFixed(1)},${Y(0)}L${start},${Y(0)}Z`;
+      if (s.area && area) el("path", { d: area, fill: s.wash }, svg);
+      el("path", { d, fill: "none", stroke: s.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round",
+        "stroke-dasharray": s.dash ? "5 4" : "none" }, svg);
+    }
+    c.hover = el("g", {}, svg);
+    c.geo = { X, Y, t0, t1, m, W, H, ih, ymax, pts };
+    c.svg = svg;
+    // legend with current values
+    const lastP = pts.length ? pts[pts.length - 1] : {};
+    c.legend.innerHTML = opts.series.map((s) => `<span><i class="key ${s.dash ? "dash" : ""} ${s.area ? "box" : ""}" style="${s.area ? "background" : "border-color"}:${s.color}"></i>${s.label} <b>${(opts.vfmt || num)(lastP[s.key])}</b></span>`).join("");
+    c.drawHover();
+  };
+  c.drawHover = function () {
+    if (!c.geo) return;
+    c.hover.innerHTML = "";
+    const p = nearest(c.geo.pts, state.hoverT);
+    if (!p || state.hoverT == null) return;
+    const { X, Y, m, ih, ymax } = c.geo;
+    const x = X(p.t);
+    el("line", { x1: x, x2: x, y1: m.t, y2: m.t + ih, stroke: "var(--axis)", "stroke-width": 1 }, c.hover);
+    for (const s of opts.series) {
+      if (p[s.key] == null) continue;
+      el("circle", { cx: x, cy: Y(Math.min(p[s.key], ymax)), r: 4.5, fill: s.color, stroke: "var(--surface)", "stroke-width": 2 }, c.hover);
+    }
+    return p;
+  };
+  const tip = $("tip");
+  const show = (p, cx, cy) => {
+    if (!p) { tip.style.opacity = 0; return; }
+    tip.innerHTML = `<div class="tt">${clockS(p.t)}</div>` + opts.series.map((s) =>
+      `<div class="row"><span><i class="key ${s.dash ? "dash" : ""} ${s.area ? "box" : ""}" style="${s.area ? "background" : "border-color"}:${s.color}"></i>${s.label}</span><b>${(opts.vfmt || num)(p[s.key])}</b></div>`).join("");
+    const r = tip.getBoundingClientRect();
+    tip.style.left = Math.min(window.innerWidth - r.width - 8, cx + 14) + "px";
+    tip.style.top = Math.max(8, cy - r.height - 10) + "px";
+    tip.style.opacity = 1;
+  };
+  box.addEventListener("pointermove", (e) => {
+    if (!c.geo) return;
+    const rect = box.getBoundingClientRect();
+    const sx = ((e.clientX - rect.left) / rect.width) * c.geo.W;
+    state.hoverT = c.geo.t0 + ((sx - c.geo.m.l) / (c.geo.W - c.geo.m.l - c.geo.m.r)) * (c.geo.t1 - c.geo.t0);
+    charts.forEach((ch) => ch.drawHover());
+    show(nearest(c.geo.pts, state.hoverT), e.clientX, e.clientY);
+  });
+  box.addEventListener("pointerleave", () => { state.hoverT = null; charts.forEach((ch) => ch.drawHover()); tip.style.opacity = 0; });
+  box.addEventListener("keydown", (e) => {
+    if (!c.geo || !c.geo.pts.length || !["ArrowLeft", "ArrowRight"].includes(e.key)) return;
+    e.preventDefault();
+    const pts = c.geo.pts, cur = nearest(pts, state.hoverT ?? pts[pts.length - 1].t);
+    const i = Math.max(0, Math.min(pts.length - 1, pts.indexOf(cur) + (e.key === "ArrowLeft" ? -1 : 1)));
+    state.hoverT = pts[i].t;
+    charts.forEach((ch) => ch.drawHover());
+    const r = box.getBoundingClientRect();
+    show(pts[i], r.left + (c.geo.X(pts[i].t) / c.geo.W) * r.width, r.top + 20);
+  });
+  box.addEventListener("blur", () => { state.hoverT = null; charts.forEach((ch) => ch.drawHover()); tip.style.opacity = 0; });
+  charts.push(c);
+  return c;
+}
+
+function nearest(pts, t) {
+  if (!pts.length || t == null) return null;
+  let lo = 0, hi = pts.length - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (pts[mid].t < t) lo = mid; else hi = mid; }
+  return Math.abs(pts[lo].t - t) <= Math.abs(pts[hi].t - t) ? pts[lo] : pts[hi];
+}
+
+// Average consecutive points into at most `n` buckets so long ranges stay smooth and fast.
+function downsample(pts, n) {
+  if (pts.length <= n) return pts;
+  const k = Math.ceil(pts.length / n), out = [];
+  for (let i = 0; i < pts.length; i += k) {
+    const chunk = pts.slice(i, i + k), o = { t: chunk[chunk.length - 1].t };
+    for (const key of ["gen", "prompt", "running", "waiting", "kv", "expected"]) {
+      const vs = chunk.map((p) => p[key]).filter((v) => v != null);
+      o[key] = vs.length ? vs.reduce((x, y) => x + y, 0) / vs.length : null;
+    }
+    out.push(o);
+  }
+  return out;
+}
+
+const series = () => ({
+  out: [{ key: "gen", label: "Actual", color: "var(--s1)" }, { key: "expected", label: "Expected", color: "var(--expected)", dash: true }],
+  req: [{ key: "running", label: "Running", color: "var(--s1)" }, { key: "waiting", label: "Waiting", color: "var(--s2)" }],
+  kv: [{ key: "kv", label: "In use", color: "var(--s1)", area: true, wash: "var(--s1-wash)" }],
+  prompt: [{ key: "prompt", label: "Prompt", color: "var(--s1)" }],
+});
+const S = series();
+makeChart("c-out", "lg-out", { series: S.out, height: 220 });
+makeChart("c-req", "lg-req", { series: S.req, integer: true });
+makeChart("c-kv", "lg-kv", { series: S.kv, ymax: 1, yfmt: (v) => nf0.format(v * 100) + "%", vfmt: pct });
+makeChart("c-prompt", "lg-prompt", { series: S.prompt, height: 160 });
+
+/* ---------- table view ---------- */
+function renderTable(pts) {
+  const rows = pts.slice(-40).reverse();
+  $("table").innerHTML = "<thead><tr><th>Time</th><th>Output tok/s</th><th>Expected</th><th>Prompt tok/s</th><th>Running</th><th>Waiting</th><th>KV cache</th></tr></thead><tbody>" +
+    rows.map((p) => `<tr><td>${clockS(p.t)}</td><td>${num(p.gen)}</td><td>${num(p.expected)}</td><td>${num(p.prompt)}</td><td>${num(p.running)}</td><td>${num(p.waiting)}</td><td>${pct(p.kv)}</td></tr>`).join("") + "</tbody>";
+}
+
+/* ---------- main loop ---------- */
+function renderAll() {
+  const d = state.data;
+  if (!d) return;
+  const su = d.setup;
+  $("model").textContent = su.model_id || "Unknown model";
+  const hw = [su.gpu ? `${su.tp}× ${su.gpu}` : "GPU unknown", su.max_model_len ? `context ${nf0.format(su.max_model_len)}` : null, su.url].filter(Boolean);
+  $("hw").textContent = hw.join("   /   ");
+  document.title = (d.analysis ? compact(d.analysis.stats.gen_tps) + " tok/s – " : "") + (su.model_id || "vLLM monitor");
+  renderHero(d);
+  renderAdvice(d.analysis);
+  renderStats(d);
+  const t1 = d.last_ok || d.now;
+  const first = state.points.length ? state.points[0].t : t1;
+  const t0 = Math.min(t1 - 60, Math.max(t1 - state.range, first));
+  const vis = state.points.filter((p) => p.t >= t0);
+  const pts = downsample(vis, Math.max(60, Math.floor($("c-out").clientWidth / 3)));
+  charts.forEach((c) => c.render(pts, t0, t1));
+  renderTable(vis);
+  $("notes").innerHTML = su.notes.length ? su.notes.map(codeify).join("<br>") : "";
+}
+
+function setLive(kind, text) {
+  const l = $("live");
+  l.className = "live " + kind;
+  l.lastElementChild.textContent = text;
+  $("app").classList.toggle("stale", kind === "off");
+}
+
+async function poll() {
+  try {
+    const r = await fetch("api/state?since=" + state.last, { cache: "no-store" });
+    const d = await r.json();
+    state.interval = d.interval;
+    for (const p of d.points) state.points.push(p);
+    if (d.points.length) state.last = d.points[d.points.length - 1].t;
+    const cutoff = d.now - 3600;
+    while (state.points.length && state.points[0].t < cutoff) state.points.shift();
+    state.data = d;
+    if (d.error) setLive("off", "Server unreachable"); else setLive("on", "Live");
+    renderAll();
+  } catch (e) {
+    setLive("off", "Monitor offline");
+  }
+  setTimeout(poll, Math.max(1000, state.interval * 1000));
+}
+
+/* ---------- controls ---------- */
+document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => {
+  state.range = +b.dataset.range;
+  document.querySelectorAll(".seg button").forEach((x) => x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+  try { localStorage.setItem("vm-range", b.dataset.range); } catch (e) {}
+  renderAll();
+}));
+try {
+  const r = localStorage.getItem("vm-range");
+  if (r) document.querySelector(`.seg button[data-range="${r}"]`)?.click();
+  const th = localStorage.getItem("vm-theme");
+  if (th) document.documentElement.dataset.theme = th;
+} catch (e) {}
+$("theme").addEventListener("click", () => {
+  const dark = document.documentElement.dataset.theme
+    ? document.documentElement.dataset.theme === "dark"
+    : matchMedia("(prefers-color-scheme: dark)").matches;
+  document.documentElement.dataset.theme = dark ? "light" : "dark";
+  try { localStorage.setItem("vm-theme", document.documentElement.dataset.theme); } catch (e) {}
+});
+let rt; window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(renderAll, 120); });
+poll();
+</script>
+</body>
+</html>
