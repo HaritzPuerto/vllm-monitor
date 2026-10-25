@@ -10,7 +10,7 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 import math
-from typing import Any, Deque, Optional
+from typing import Any, Deque, List, Optional, Union
 from urllib.parse import parse_qs, urlparse
 
 from .analysis import Analysis, Setup, analyze
@@ -70,6 +70,23 @@ def setup_json(setup: Setup) -> dict:
     }
 
 
+def chart_point(prev: Optional[Snapshot], snap: Snapshot, analysis: Optional[dict]) -> Optional[dict]:
+    """One sample of the page's time series: rates since `prev` and gauges at `snap`."""
+    if prev is None or snap.t <= prev.t:
+        return None
+    dt = snap.t - prev.t
+    rate = lambda names: max(0.0, (snap.get(names, 0.0) - prev.get(names, 0.0)) / dt)  # noqa: E731
+    return {
+        "t": snap.t,
+        "gen": rate(GENERATION_TOKENS),
+        "prompt": rate(PROMPT_TOKENS),
+        "running": snap.get(RUNNING, 0.0),
+        "waiting": snap.get(WAITING, 0.0),
+        "kv": snap.get(KV_USAGE),
+        "expected": analysis["expected_now"] if analysis else None,
+    }
+
+
 class MonitorService:
     """Scrapes the server in a background thread and keeps a time series for the page."""
 
@@ -103,18 +120,9 @@ class MonitorService:
             an = analyze(stats, self.setup) if stats else None
             self.analysis = analysis_json(an) if an else None
             self.error, self.last_ok = None, snap.t
-            if prev is not None and snap.t > prev.t:
-                dt = snap.t - prev.t
-                rate = lambda names: max(0.0, (snap.get(names, 0.0) - prev.get(names, 0.0)) / dt)  # noqa: E731
-                self.points.append({
-                    "t": snap.t,
-                    "gen": rate(GENERATION_TOKENS),
-                    "prompt": rate(PROMPT_TOKENS),
-                    "running": snap.get(RUNNING, 0.0),
-                    "waiting": snap.get(WAITING, 0.0),
-                    "kv": snap.get(KV_USAGE),
-                    "expected": self.analysis["expected_now"] if self.analysis else None,
-                })
+            p = chart_point(prev, snap, self.analysis)
+            if p:
+                self.points.append(p)
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -143,11 +151,57 @@ class MonitorService:
             }
 
 
+class ReplayService:
+    """Serves a finished recording: the whole run as a time series, plus analysis of any time range in it."""
+
+    def __init__(self, snaps: List[Snapshot], setup: Setup, window: float = 60.0, source: Optional[str] = None):
+        self.snaps, self.setup, self.window, self.source = snaps, setup, window, source
+        gaps = sorted(b.t - a.t for a, b in zip(snaps, snaps[1:]) if b.t > a.t)
+        self.interval = gaps[len(gaps) // 2] if gaps else 1.0
+        # the "expected" line uses the same trailing window as the live dashboard
+        self.points: List[dict] = []
+        lo = 0
+        for i in range(1, len(snaps)):
+            while i - lo > 1 and snaps[i].t - snaps[lo].t > window:
+                lo += 1
+            stats = compute_window(snaps[lo:i + 1])
+            an = analysis_json(analyze(stats, setup)) if stats else None
+            p = chart_point(snaps[i - 1], snaps[i], an)
+            if p:
+                self.points.append(p)
+        self.overall = self.analyze_range(snaps[0].t, snaps[-1].t)
+
+    def analyze_range(self, t0: float, t1: float) -> Optional[dict]:
+        stats = compute_window([s for s in self.snaps if t0 <= s.t <= t1])
+        return analysis_json(analyze(stats, self.setup)) if stats else None
+
+    def start(self) -> "ReplayService":
+        return self
+
+    def stop(self) -> None:
+        pass
+
+    def state(self, since: float = 0.0) -> dict:
+        start, end = self.snaps[0].t, self.snaps[-1].t
+        return {
+            "mode": "replay", "source": self.source, "start": start, "end": end,
+            "now": end,
+            "interval": self.interval,
+            "window": self.window,
+            "setup": setup_json(self.setup),
+            "analysis": self.overall,
+            "error": None,
+            "last_ok": end,
+            "points": [p for p in self.points if p["t"] > since],
+        }
+
+
 def _page() -> bytes:
     return files("vllm_monitor").joinpath("static/index.html").read_bytes()
 
 
-def make_server(service: MonitorService, host: str = "127.0.0.1", port: int = 8080) -> ThreadingHTTPServer:
+def make_server(service: Union[MonitorService, ReplayService], host: str = "127.0.0.1",
+                port: int = 8080) -> ThreadingHTTPServer:
     page = _page()
 
     class Handler(BaseHTTPRequestHandler):
@@ -166,6 +220,15 @@ def make_server(service: MonitorService, host: str = "127.0.0.1", port: int = 80
             elif u.path == "/api/state":
                 since = float(parse_qs(u.query).get("since", ["0"])[0] or 0)
                 self._send(json.dumps(_clean(service.state(since))).encode(), "application/json")
+            elif u.path == "/api/range" and isinstance(service, ReplayService):
+                q = parse_qs(u.query)
+                try:
+                    t0, t1 = float(q["t0"][0]), float(q["t1"][0])
+                except (KeyError, ValueError):
+                    self.send_error(400, "need numeric t0 and t1")
+                    return
+                body = {"t0": t0, "t1": t1, "analysis": service.analyze_range(t0, t1)}
+                self._send(json.dumps(_clean(body)).encode(), "application/json")
             else:
                 self.send_error(404)
 

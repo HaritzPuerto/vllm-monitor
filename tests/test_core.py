@@ -159,6 +159,42 @@ def test_web_api_serves_page_and_state():
         fake_server.shutdown()
 
 
+def test_replay_analyses_any_range_of_a_recording():
+    import threading
+    import urllib.request
+
+    from vllm_monitor.web import ReplayService, make_server
+
+    # a finished job: 10 min with few requests in flight, then 10 min well tuned
+    snaps, t, counters = [], 0.0, None
+    for scenario in ("low-concurrency", "healthy"):
+        fake = FakeVLLM(scenario)
+        if counters:
+            fake.c = counters
+        for _ in range(120):
+            fake.last -= 5
+            snaps.append(parse_metrics(fake.metrics_text(), t=t))
+            t += 5
+        counters = fake.c
+    setup = Setup(model_id="demo", gpu=GPUS["H100-SXM"], model=DEMO_SPEC)
+    service = ReplayService(snaps, setup, source="run.jsonl.gz")
+    web = make_server(service, port=0)
+    threading.Thread(target=web.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{web.server_address[1]}"
+    get = lambda path: json.loads(urllib.request.urlopen(base + path).read())  # noqa: E731
+    try:
+        state = get("/api/state")
+        assert state["mode"] == "replay" and len(state["points"]) == len(snaps) - 1
+        assert all(p["expected"] for p in state["points"][20:])
+        first = get(f"/api/range?t0=0&t1={600 - 5}")["analysis"]
+        assert any(a["title"].startswith("Client-bound") for a in first["advice"])
+        second = get(f"/api/range?t0=600&t1={t}")["analysis"]
+        assert not any(a["title"].startswith("Client-bound") for a in second["advice"])
+        assert get("/api/range?t0=10&t1=12")["analysis"] is None  # fewer than 2 samples
+    finally:
+        web.shutdown()
+
+
 @pytest.mark.parametrize("cmd", ["serve", "record"])
 def test_sigterm_leaves_readable_gzip(tmp_path, cmd):
     """Jobs stop the monitor with SIGTERM; the .gz recording must still be complete."""

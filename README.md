@@ -37,6 +37,9 @@ vllm-monitor record http://localhost:8000 -o logs/run.jsonl.gz
 # analyse a recording afterwards: summary, timeline, advice
 vllm-monitor report logs/run.jsonl.gz --skip 120   # ignore 2 min of warm-up
 
+# replay a finished job in the web dashboard; drag across a chart to analyse that stretch
+vllm-monitor replay logs/run.jsonl.gz --port 8080
+
 # plan before you run: throughput vs. concurrency, KV capacity, wall-time
 vllm-monitor estimate --model Qwen/Qwen2.5-7B-Instruct --gpu H100 \
     --input-len 1000 --output-len 300 --prompts 100000
@@ -82,7 +85,16 @@ If compute nodes don't accept SSH, run `serve` on the login node instead, pointi
 for the host it runs on.
 
 With `record`, the job log shows a status line per minute, and `vllm-monitor report logs/<id>.jsonl.gz`
-gives the full analysis. For a live view, either `condor_ssh_to_job` / `srun --jobid ... --pty`
+gives the full analysis.
+
+## Replaying a finished job
+
+`vllm-monitor replay logs/<id>.jsonl.gz` opens the recording in the web dashboard. The charts span the
+whole run, and the speedometer, advice and stats describe it. Drag across any chart to select part of
+the run, e.g. a slow phase after warm-up, and the verdict, "what to change next run" and latency
+stats are recomputed for just that stretch. The recording keeps the GPU, TP and model from the job, so
+replay works on your laptop. To ask "what if", re-run it with other flags: `--gpu`, `--tp`,
+`--max-num-seqs`, `--bandwidth-eff`, `--flops-eff`. For a live view, either `condor_ssh_to_job` / `srun --jobid ... --pty`
 into the job and run `vllm-monitor watch`, or run it from the login node against
 `http://<node>:8000` with `--gpu` and `--tp`.
 

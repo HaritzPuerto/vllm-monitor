@@ -49,6 +49,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; }
 body {
   background: var(--plane);
@@ -77,6 +78,7 @@ button { font: inherit; color: inherit; }
 .live i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .live.on i { background: var(--good); box-shadow: 0 0 0 0 rgba(12, 163, 12, .5); animation: pulse 2s infinite; }
 .live.off i { background: var(--critical); }
+.live.replay i { background: var(--s1); border-radius: 2px; }
 @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(12,163,12,.45); } 70% { box-shadow: 0 0 0 7px rgba(12,163,12,0); } 100% { box-shadow: 0 0 0 0 rgba(12,163,12,0); } }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 2px; }
 .seg button { border: 0; background: none; padding: 3px 10px; border-radius: 6px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
@@ -114,6 +116,9 @@ button { font: inherit; color: inherit; }
   padding: 3px 12px 3px 8px; border-radius: 999px; background: var(--track);
 }
 .status svg { width: 16px; height: 16px; }
+.scope { margin: 0; font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.scope b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.link-btn { border: 0; background: none; padding: 0; color: var(--s1); cursor: pointer; font-size: 13px; text-decoration: underline; text-underline-offset: 2px; }
 .sentence { font-size: 17px; line-height: 1.5; margin: 0; max-width: 58ch; color: var(--ink); }
 .sentence b { font-weight: 600; }
 
@@ -146,6 +151,7 @@ button { font: inherit; color: inherit; }
 .chart { margin-top: 8px; position: relative; }
 .chart svg { display: block; width: 100%; }
 .chart .tick { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.replay .chart { cursor: crosshair; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
 .stale .chart, .stale .gauge { opacity: .45; transition: opacity .3s; }
 
 /* ---------- stat strip ---------- */
@@ -207,7 +213,7 @@ th { color: var(--ink-2); font-weight: 500; }
     </div>
     <div class="controls">
       <span class="live" id="live"><i></i><span>Connecting</span></span>
-      <div class="seg" role="group" aria-label="Chart time range">
+      <div class="seg" id="range" role="group" aria-label="Chart time range">
         <button data-range="300" aria-pressed="false">5 min</button>
         <button data-range="900" aria-pressed="true">15 min</button>
         <button data-range="3600" aria-pressed="false">1 h</button>
@@ -222,6 +228,7 @@ th { color: var(--ink-2); font-weight: 500; }
     <div class="panel hero-main">
       <div class="gauge" id="gauge"></div>
       <div class="hero-text">
+        <p class="scope" id="scope" hidden></p>
         <span class="status" id="status">Waiting for data</span>
         <p class="sentence" id="sentence">Collecting the first samples from the server.</p>
         <dl class="marks" id="marks"></dl>
@@ -278,7 +285,8 @@ th { color: var(--ink-2); font-weight: 500; }
 "use strict";
 const $ = (id) => document.getElementById(id);
 const NS = "http://www.w3.org/2000/svg";
-const state = { points: [], last: 0, range: 900, data: null, hoverT: null, interval: 2 };
+const state = { points: [], last: 0, range: 900, data: null, hoverT: null, interval: 2,
+  replay: false, sel: null, selAn: null, drag: null };
 const charts = [];
 
 /* ---------- formatting ---------- */
@@ -293,6 +301,12 @@ function compact(v) {
   return nf0.format(v);
 }
 function secs(v) { return v == null ? "–" : v < 1 ? nf0.format(v * 1000) + " ms" : nf1.format(v) + " s"; }
+function dur(v) {
+  if (v == null) return "–";
+  if (v < 90) return nf0.format(v) + " s";
+  if (v < 5400) return nf0.format(v / 60) + " min";
+  return nf1.format(v / 3600) + " h";
+}
 function pct(v) { return v == null ? "–" : nf0.format(v * 100) + "%"; }
 function clock(t) { return new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: t % 60 ? "2-digit" : undefined }); }
 function clockS(t) { return new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
@@ -334,8 +348,10 @@ function renderHero(d) {
   const v = verdictOf(a);
   $("status").innerHTML = (ICONS[v.key] || "") + "<span>" + v.label + "</span>";
   let s;
-  if (!a) s = d.error ? "Can't reach the server: " + esc(d.error) : "Collecting the first samples from the server.";
-  else if (a.verdict === "idle") s = "No requests are running. Throughput will appear once your client sends work.";
+  if (!a) s = d.error ? "Can't reach the server: " + esc(d.error) :
+    state.replay ? "Not enough samples in this range; select a longer stretch." : "Collecting the first samples from the server.";
+  else if (a.verdict === "idle") s = state.replay ? "No requests were running in this part of the run." :
+    "No requests are running. Throughput will appear once your client sends work.";
   else if (!a.expected) s = "Producing <b>" + num(a.stats.gen_tps) + " tokens/s</b> with about " + num(a.stats.running_busy_avg) +
     " requests in flight. Start with <code>--gpu</code> and <code>--tp</code> to compare against an estimate.";
   else {
@@ -422,7 +438,8 @@ function renderGauge(a) {
   }
   n.svg.setAttribute("aria-label", `Speedometer: ${num(actual)} output tokens per second` +
     (exp != null ? `, expected ${num(exp)}` : "") + (best != null ? `, possible ${num(best)}` : ""));
-  const rows = [[`<svg class="mk" viewBox="0 0 14 14" aria-hidden="true"><rect x="1" y="4" width="12" height="6" rx="2" fill="var(--s1)"/></svg>`, "You now", a ? num(actual) : "–"]];
+  const you = !state.replay ? "You now" : state.sel ? "Selection" : "Whole run";
+  const rows = [[`<svg class="mk" viewBox="0 0 14 14" aria-hidden="true"><rect x="1" y="4" width="12" height="6" rx="2" fill="var(--s1)"/></svg>`, you, a ? num(actual) : "–"]];
   if (exp != null) rows.push([MARKER("var(--expected)"), "Expected at this load", num(exp)]);
   if (best != null) rows.push([MARKER("var(--ink)"), `Possible at ${nf0.format(a.best.concurrency)} requests`, num(best)]);
   $("marks").innerHTML = rows.map(([i, k, v]) => `<div>${i}<dt>${k}</dt><dd>${v}</dd></div>`).join("");
@@ -450,9 +467,9 @@ function renderStats(d) {
     ["Prompt length", num(s.avg_prompt_len), "tokens avg"],
     ["Output length", num(s.avg_gen_len), "tokens avg"],
     ["Requests done", a ? nf1.format(s.requests_per_s) : "–", "per second"],
-    ["GPU busy", pct(s.busy_frac), "of the window"],
+    ["GPU busy", pct(s.busy_frac), !state.replay ? "of the window" : state.sel ? "of the selection" : "of the run"],
     ["Prefix-cache hits", pct(s.prefix_hit_rate), ""],
-    ["Preemptions", a ? nf0.format(s.preemptions) : "–", "last " + nf0.format(d.window) + " s"],
+    ["Preemptions", a ? nf0.format(s.preemptions) : "–", a ? (state.replay ? "in " : "last ") + dur(s.duration) : ""],
   ];
   $("stats").innerHTML = items.map(([k, v, sub]) => `<div><dt>${k}</dt><dd>${v}<small>${sub || "&nbsp;"}</small></dd></div>`).join("");
 }
@@ -491,7 +508,7 @@ function makeChart(id, legendId, opts) {
       t.textContent = opts.yfmt ? opts.yfmt(v) : compact(v);
     }
     // x ticks
-    const span = t1 - t0, step = [15, 30, 60, 120, 180, 300, 600, 900].find((x) => span / x <= 6) || 1200;
+    const span = t1 - t0, step = [15, 30, 60, 120, 180, 300, 600, 900, 1800, 3600, 7200, 10800, 21600].find((x) => span / x <= 6) || 43200;
     for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
       const tx = el("text", { x: X(t), y: H - 6, "text-anchor": "middle", class: "tick" }, svg);
       tx.textContent = clock(t);
@@ -515,13 +532,27 @@ function makeChart(id, legendId, opts) {
       el("path", { d, fill: "none", stroke: s.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round",
         "stroke-dasharray": s.dash ? "5 4" : "none" }, svg);
     }
+    c.selG = el("g", {}, svg);
     c.hover = el("g", {}, svg);
     c.geo = { X, Y, t0, t1, m, W, H, ih, ymax, pts };
     c.svg = svg;
+    c.drawSel();
     // legend with current values
     const lastP = pts.length ? pts[pts.length - 1] : {};
     c.legend.innerHTML = opts.series.map((s) => `<span><i class="key ${s.dash ? "dash" : ""} ${s.area ? "box" : ""}" style="${s.area ? "background" : "border-color"}:${s.color}"></i>${s.label} <b>${(opts.vfmt || num)(lastP[s.key])}</b></span>`).join("");
     c.drawHover();
+  };
+  // replay: shade the dragged or selected time range
+  c.drawSel = function () {
+    if (!c.geo) return;
+    c.selG.innerHTML = "";
+    const r = state.drag || state.sel;
+    if (!r) return;
+    const { X, m, ih, W } = c.geo;
+    const x0 = Math.max(m.l, X(Math.min(r[0], r[1]))), x1 = Math.min(W - m.r, X(Math.max(r[0], r[1])));
+    if (x1 <= x0) return;
+    el("rect", { x: x0, y: m.t, width: x1 - x0, height: ih, fill: "var(--s1-wash)" }, c.selG);
+    for (const x of [x0, x1]) el("line", { x1: x, x2: x, y1: m.t, y2: m.t + ih, stroke: "var(--s1)", "stroke-width": 1 }, c.selG);
   };
   c.drawHover = function () {
     if (!c.geo) return;
@@ -547,13 +578,36 @@ function makeChart(id, legendId, opts) {
     tip.style.top = Math.max(8, cy - r.height - 10) + "px";
     tip.style.opacity = 1;
   };
+  const timeAt = (e) => {
+    const rect = box.getBoundingClientRect(), g = c.geo;
+    const sx = ((e.clientX - rect.left) / rect.width) * g.W;
+    const t = g.t0 + ((sx - g.m.l) / (g.W - g.m.l - g.m.r)) * (g.t1 - g.t0);
+    return Math.max(g.t0, Math.min(g.t1, t));
+  };
   box.addEventListener("pointermove", (e) => {
     if (!c.geo) return;
-    const rect = box.getBoundingClientRect();
-    const sx = ((e.clientX - rect.left) / rect.width) * c.geo.W;
-    state.hoverT = c.geo.t0 + ((sx - c.geo.m.l) / (c.geo.W - c.geo.m.l - c.geo.m.r)) * (c.geo.t1 - c.geo.t0);
+    state.hoverT = timeAt(e);
+    if (state.drag) {
+      state.drag[1] = state.hoverT;
+      charts.forEach((ch) => ch.drawSel());
+    }
     charts.forEach((ch) => ch.drawHover());
     show(nearest(c.geo.pts, state.hoverT), e.clientX, e.clientY);
+  });
+  box.addEventListener("pointerdown", (e) => {
+    if (!state.replay || !c.geo || e.button !== 0 || e.pointerType === "touch") return;
+    box.setPointerCapture(e.pointerId);
+    const t = timeAt(e);
+    state.drag = [t, t];
+  });
+  box.addEventListener("pointercancel", () => { state.drag = null; charts.forEach((ch) => ch.drawSel()); });
+  box.addEventListener("pointerup", () => {
+    if (!state.drag) return;
+    const [a, b] = state.drag, g = c.geo;
+    state.drag = null;
+    // a click (or a sliver) is not a selection
+    if (Math.abs(b - a) < Math.max(3 * state.interval, (g.t1 - g.t0) / 200)) { charts.forEach((ch) => ch.drawSel()); return; }
+    select(Math.min(a, b), Math.max(a, b));
   });
   box.addEventListener("pointerleave", () => { state.hoverT = null; charts.forEach((ch) => ch.drawHover()); tip.style.opacity = 0; });
   box.addEventListener("keydown", (e) => {
@@ -607,7 +661,7 @@ makeChart("c-prompt", "lg-prompt", { series: S.prompt, height: 160 });
 
 /* ---------- table view ---------- */
 function renderTable(pts) {
-  const rows = pts.slice(-40).reverse();
+  const rows = (state.replay ? downsample(pts, 200) : pts.slice(-40)).reverse();
   $("table").innerHTML = "<thead><tr><th>Time</th><th>Output tok/s</th><th>Expected</th><th>Prompt tok/s</th><th>Running</th><th>Waiting</th><th>KV cache</th></tr></thead><tbody>" +
     rows.map((p) => `<tr><td>${clockS(p.t)}</td><td>${num(p.gen)}</td><td>${num(p.expected)}</td><td>${num(p.prompt)}</td><td>${num(p.running)}</td><td>${num(p.waiting)}</td><td>${pct(p.kv)}</td></tr>`).join("") + "</tbody>";
 }
@@ -620,18 +674,53 @@ function renderAll() {
   $("model").textContent = su.model_id || "Unknown model";
   const hw = [su.gpu ? `${su.tp}× ${su.gpu}` : "GPU unknown", su.max_model_len ? `context ${nf0.format(su.max_model_len)}` : null, su.url].filter(Boolean);
   $("hw").textContent = hw.join("   /   ");
-  document.title = (d.analysis ? compact(d.analysis.stats.gen_tps) + " tok/s – " : "") + (su.model_id || "vLLM monitor");
-  renderHero(d);
-  renderAdvice(d.analysis);
-  renderStats(d);
+  if (state.replay) {
+    const src = d.source ? d.source.split("/").pop() : null;
+    $("hw").textContent = [src, new Date(d.start * 1000).toLocaleDateString(), ...hw].filter(Boolean).join("   /   ");
+    document.title = "Replay – " + (su.model_id || "vLLM monitor");
+  } else {
+    document.title = (d.analysis ? compact(d.analysis.stats.gen_tps) + " tok/s – " : "") + (su.model_id || "vLLM monitor");
+  }
+  // in a replay the hero, advice and stats describe the selected range (default: the whole run)
+  const view = state.sel ? { ...d, analysis: state.selAn } : d;
+  renderHero(view);
+  renderAdvice(view.analysis);
+  renderStats(view);
+  renderScope(d);
   const t1 = d.last_ok || d.now;
   const first = state.points.length ? state.points[0].t : t1;
-  const t0 = Math.min(t1 - 60, Math.max(t1 - state.range, first));
+  const t0 = state.replay ? Math.min(first, t1 - 60) : Math.min(t1 - 60, Math.max(t1 - state.range, first));
   const vis = state.points.filter((p) => p.t >= t0);
   const pts = downsample(vis, Math.max(60, Math.floor($("c-out").clientWidth / 3)));
   charts.forEach((c) => c.render(pts, t0, t1));
-  renderTable(vis);
+  renderTable(state.sel ? vis.filter((p) => p.t >= state.sel[0] && p.t <= state.sel[1]) : vis);
   $("notes").innerHTML = su.notes.length ? su.notes.map(codeify).join("<br>") : "";
+}
+
+function renderScope(d) {
+  const box = $("scope");
+  box.hidden = !state.replay;
+  if (!state.replay) return;
+  if (state.sel) {
+    const [a, b] = state.sel;
+    box.innerHTML = `<span>Selection <b>${clock(a)}–${clock(b)}</b> (${dur(b - a)})</span><button class="link-btn" id="reset">Show whole run</button>`;
+    $("reset").addEventListener("click", () => { state.sel = state.selAn = null; renderAll(); });
+  } else {
+    box.innerHTML = `<span>Whole run <b>${clock(d.start)}–${clock(d.end)}</b> (${dur(d.end - d.start)}). Drag across a chart to analyse part of it.</span>`;
+  }
+}
+
+async function select(t0, t1) {
+  state.sel = [t0, t1];
+  try {
+    const r = await fetch(`api/range?t0=${t0}&t1=${t1}`, { cache: "no-store" });
+    const j = await r.json();
+    if (!state.sel || state.sel[0] !== t0 || state.sel[1] !== t1) return;  // superseded by a newer drag
+    state.selAn = j.analysis;
+  } catch (e) {
+    state.selAn = null;
+  }
+  renderAll();
 }
 
 function setLive(kind, text) {
@@ -648,9 +737,19 @@ async function poll() {
     state.interval = d.interval;
     for (const p of d.points) state.points.push(p);
     if (d.points.length) state.last = d.points[d.points.length - 1].t;
+    state.data = d;
+    if (d.mode === "replay") {
+      // a recording doesn't change: load it once and keep every point
+      state.replay = true;
+      $("app").classList.add("replay");
+      $("range").hidden = true;
+      $("advice-h").textContent = "What to change next run";
+      setLive("replay", "Recording");
+      renderAll();
+      return;
+    }
     const cutoff = d.now - 3600;
     while (state.points.length && state.points[0].t < cutoff) state.points.shift();
-    state.data = d;
     if (d.error) setLive("off", "Server unreachable"); else setLive("on", "Live");
     renderAll();
   } catch (e) {
@@ -660,9 +759,9 @@ async function poll() {
 }
 
 /* ---------- controls ---------- */
-document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => {
+document.querySelectorAll("#range button").forEach((b) => b.addEventListener("click", () => {
   state.range = +b.dataset.range;
-  document.querySelectorAll(".seg button").forEach((x) => x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+  document.querySelectorAll("#range button").forEach((x) => x.setAttribute("aria-pressed", x === b ? "true" : "false"));
   try { localStorage.setItem("vm-range", b.dataset.range); } catch (e) {}
   renderAll();
 }));

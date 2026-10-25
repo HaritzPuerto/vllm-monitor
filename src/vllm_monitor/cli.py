@@ -1,4 +1,4 @@
-"""Command line interface: ``vllm-monitor {serve,watch,record,report,estimate,gpus,demo}``."""
+"""Command line interface: ``vllm-monitor {serve,watch,record,report,replay,estimate,gpus,demo}``."""
 
 from __future__ import annotations
 
@@ -167,19 +167,27 @@ def cmd_record(args) -> int:
     return 0
 
 
-def cmd_report(args) -> int:
-    console = Console()
+def _load_recording(args, console: Console):
+    """Snapshots and Setup of a recording; CLI flags override what the header says."""
     header, snaps = read_recording(args.file)
+    if args.skip:
+        snaps = [s for s in snaps if s.t - snaps[0].t >= args.skip]
     if len(snaps) < 2:
         console.print("[red]recording has fewer than 2 samples[/]")
-        return 1
+        return None, None
     setup = setup_from_header(header, gpu=args.gpu, tp=args.tp, model_ref=args.model_config,
                               max_num_seqs=args.max_num_seqs)
     setup.assumptions = _assumptions(args)
     for n in setup.notes:
         console.print(f"[dim]note: {n}[/]")
-    if args.skip:
-        snaps = [s for s in snaps if s.t - snaps[0].t >= args.skip]
+    return snaps, setup
+
+
+def cmd_report(args) -> int:
+    console = Console()
+    snaps, setup = _load_recording(args, console)
+    if snaps is None:
+        return 1
     overall = analyze(compute_window(snaps), setup)
 
     total = snaps[-1].t - snaps[0].t
@@ -200,6 +208,20 @@ def cmd_report(args) -> int:
     step = max(1, len(history) // 80)
     history = [sum(history[i:i + step]) / len(history[i:i + step]) for i in range(0, len(history), step)]
     print_report(console, setup, overall, timeline, history, args.file)
+    console.print(f"[dim]explore it in the browser: vllm-monitor replay {args.file}[/]")
+    return 0
+
+
+def cmd_replay(args) -> int:
+    from .web import ReplayService
+
+    console = Console()
+    snaps, setup = _load_recording(args, console)
+    if snaps is None:
+        return 1
+    with console.status(f"analysing {len(snaps):,} samples …"):
+        service = ReplayService(snaps, setup, window=args.window, source=args.file)
+    _serve(service, args.host, args.port, console)
     return 0
 
 
@@ -330,6 +352,15 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--skip", type=float, default=0, help="ignore the first N seconds (warm-up)")
     _add_setup_args(rp)
     rp.set_defaults(func=cmd_report)
+
+    rpl = sub.add_parser("replay", help="open a recording in the web dashboard; drag over any part to analyse it")
+    rpl.add_argument("file")
+    rpl.add_argument("--port", type=int, default=8080)
+    rpl.add_argument("--host", default="127.0.0.1", help="interface to bind (default %(default)s)")
+    rpl.add_argument("--window", type=float, default=60, help="seconds of history behind the 'expected' line")
+    rpl.add_argument("--skip", type=float, default=0, help="ignore the first N seconds (warm-up)")
+    _add_setup_args(rpl)
+    rpl.set_defaults(func=cmd_replay)
 
     e = sub.add_parser("estimate", help="predict throughput for a model / GPU / workload (no server needed)")
     e.add_argument("--model", required=True, help="HF repo id, model dir or config.json")
