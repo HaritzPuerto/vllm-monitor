@@ -109,6 +109,8 @@ button { font: inherit; color: inherit; }
 .hero-text { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; min-width: 0; }
 .marks { margin: 2px 0 0; display: grid; grid-template-columns: 14px auto auto; gap: 8px 10px; align-items: center; justify-content: start; font-size: 14px; }
 .marks div { display: contents; }
+/* explicit size: Safari gives a viewBox-only svg the 300x150 default instead of fitting the grid column */
+.marks .mk { display: block; width: 14px; height: 14px; }
 .marks dt { color: var(--ink-2); }
 .marks dd { margin: 0 0 0 6px; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
 .status {
@@ -377,7 +379,7 @@ function arcD(r, d0, d1) {
   return `M${x0.toFixed(2)},${y0.toFixed(2)}A${r},${r} 0 ${d1 - d0 > 180 ? 1 : 0} 1 ${x1.toFixed(2)},${y1.toFixed(2)}`;
 }
 const angleOf = (v) => GA.a0 + (GA.a1 - GA.a0) * Math.max(0, Math.min(1, (v || 0) / gauge.max));
-const MARKER = (color) => `<svg class="mk" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 13L1.5 3h11z" fill="${color}"/></svg>`;
+const MARKER = (color) => `<svg class="mk" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 13L1.5 3h11z" fill="${color}"/></svg>`;
 
 function buildGauge(max) {
   const { cx, cy, R, a0, a1 } = GA;
@@ -439,7 +441,7 @@ function renderGauge(a) {
   n.svg.setAttribute("aria-label", `Speedometer: ${num(actual)} output tokens per second` +
     (exp != null ? `, expected ${num(exp)}` : "") + (best != null ? `, possible ${num(best)}` : ""));
   const you = !state.replay ? "You now" : state.sel ? "Selection" : "Whole run";
-  const rows = [[`<svg class="mk" viewBox="0 0 14 14" aria-hidden="true"><rect x="1" y="4" width="12" height="6" rx="2" fill="var(--s1)"/></svg>`, you, a ? num(actual) : "–"]];
+  const rows = [[`<svg class="mk" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="1" y="4" width="12" height="6" rx="2" fill="var(--s1)"/></svg>`, you, a ? num(actual) : "–"]];
   if (exp != null) rows.push([MARKER("var(--expected)"), "Expected at this load", num(exp)]);
   if (best != null) rows.push([MARKER("var(--ink)"), `Possible at ${nf0.format(a.best.concurrency)} requests`, num(best)]);
   $("marks").innerHTML = rows.map(([i, k, v]) => `<div>${i}<dt>${k}</dt><dd>${v}</dd></div>`).join("");
